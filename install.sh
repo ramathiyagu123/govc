@@ -3,23 +3,23 @@
 function download_binaries() {
   test -e binaries || mkdir binaries
   test -e ${OPENSHIFT_CLUSTERNAME} || mkdir ${OPENSHIFT_CLUSTERNAME}
-  echo "Downloading GOVC"
+  echo "Downloading GOVC ${BINARIES_GOVC} "
   curl -sL -o binaries/govc.gz ${BINARIES_GOVC}
   gunzip binaries/govc.gz
   chmod 755 binaries/govc
 
-  echo "Downloading OpenShift ISO"
+  echo "Downloading OpenShift ISO ${BINARIES_ISO}"
   curl -sL -o binaries/installer.iso ${BINARIES_ISO}
 
-  echo "Downloading OpenShift BIOS"
+  echo "Downloading OpenShift BIOS ${BINARIES_BIOS}"
   curl -sL -o ${OPENSHIFT_CLUSTERNAME}/bios.gz ${BINARIES_BIOS}
   
-  echo "Downloading OpenShift Installer"
+  echo "Downloading OpenShift Installer ${BINARIES_INSTALLER}"
   curl -sL -o binaries/installer.tar.gz ${BINARIES_INSTALLER}
   tar -xf binaries/installer.tar.gz -C binaries
   rm binaries/installer.tar.gz
 
-  echo "Downloading OpenShift Client"
+  echo "Downloading OpenShift Client  ${BINARIES_CLIENT}"
   curl -sL -o binaries/client.tar.gz ${BINARIES_CLIENT}
   tar -xf binaries/client.tar.gz -C binaries
   rm binaries/client.tar.gz
@@ -88,7 +88,6 @@ function create_all_isos() {
   done
   if [[ "${STORAGE_COUNT}" -gt "0" ]]; then
     for i in $(eval echo {1..${STORAGE_COUNT}}); do
-  curl -sL -o binaries/client.tar.gz ${BINARIES_CLIENT}
       let "c=i-1"
       let "s=WORKER_COUNT+i"
       create_iso "${STORAGE_IPADDRESS[$c]}" "${STORAGE_HOSTNAME[$c]}.${OPENSHIFT_CLUSTERNAME}.${OPENSHIFT_BASEDOMAIN}" "worker" $s
@@ -98,7 +97,8 @@ function create_all_isos() {
 
 
 function create_ignition_configs() {
-  test -e ${OPENSHIFT_CLUSTERNAME} || mkdir ${OPENSHIFT_CLUSTERNAME}
+  echo "openshift cluster name ${OPENSHIFT_CLUSTERNAME}"
+  test -e ${OPENSHIFT_CLUSTERNAME} || sudo mkdir ${OPENSHIFT_CLUSTERNAME}
   test -e "${OPENSHIFT_SSHKEY}.pub" || ssh-keygen -t rsa -b 4096 -N '' -f ${OPENSHIFT_SSHKEY}
   cat <<EOF > ${OPENSHIFT_CLUSTERNAME}/install-config.yaml
 apiVersion: v1
@@ -136,12 +136,12 @@ EOF
 
 
 function copy_files_to_webroot() {
-  chmod 644 ${OPENSHIFT_CLUSTERNAME}/*.ign ${OPENSHIFT_CLUSTERNAME}/bios.gz
+  sudo chmod 644 ${OPENSHIFT_CLUSTERNAME}/*.ign ${OPENSHIFT_CLUSTERNAME}/bios.gz
   ifconfig -a | grep ${WEBSERVER_INTERNAL_IP} > /dev/null && {
-    test -e ${WEBSERVER_WEBROOT}/${OPENSHIFT_CLUSTERNAME} || mkdir ${WEBSERVER_WEBROOT}/${OPENSHIFT_CLUSTERNAME}
-    cp -Rp ${OPENSHIFT_CLUSTERNAME}/*.ign ${OPENSHIFT_CLUSTERNAME}/bios.gz ${WEBSERVER_WEBROOT}/${OPENSHIFT_CLUSTERNAME}
+    test -e ${WEBSERVER_WEBROOT}/${OPENSHIFT_CLUSTERNAME} || sudo mkdir ${WEBSERVER_WEBROOT}/${OPENSHIFT_CLUSTERNAME}
+    sudo cp -Rp ${OPENSHIFT_CLUSTERNAME}/*.ign ${OPENSHIFT_CLUSTERNAME}/bios.gz ${WEBSERVER_WEBROOT}/${OPENSHIFT_CLUSTERNAME}
   } || {
-    scp -i ${WEBSERVER_SSHKEY} -r ${OPENSHIFT_CLUSTERNAME} ${WEBSERVER_USERNAME}@${WEBSERVER_EXTERNAL_IP}:${WEBSERVER_WEBROOT}
+    sudo scp -i ${WEBSERVER_SSHKEY} -r ${OPENSHIFT_CLUSTERNAME} ${WEBSERVER_USERNAME}@${WEBSERVER_EXTERNAL_IP}:${WEBSERVER_WEBROOT}
   }
 }
 
@@ -154,17 +154,21 @@ function create_vm() {
   COUNT=${5:-"1"}
   let "MEM=$MEM*1024"
   FOLDER="/${VSPHERE_DATACENTER}/vm/${VSPHERE_FOLDER}"
+  echo "creating vm  binaries/govc vm.create -c=${CPU} -m=${MEM} -disk=${DISK}GB -ds=${VSPHERE_NODE_DATASTORE} -net=${VSPHERE_NETWORK} -pool=${OPENSHIFT_CLUSTERNAME} -folder=${FOLDER} -on=false -iso-datastore=${VSPHERE_IMAGE_DATASTORE} -iso=${VSPHERE_IMAGE_DATASTORE_PATH}/${OPENSHIFT_CLUSTERNAME}-${TYPE}-${COUNT}.iso ${OPENSHIFT_CLUSTERNAME}-${TYPE}-${COUNT}"
   binaries/govc vm.create -c=${CPU} -m=${MEM} -disk=${DISK}GB -ds=${VSPHERE_NODE_DATASTORE} -net=${VSPHERE_NETWORK} -pool=${OPENSHIFT_CLUSTERNAME} -folder=${FOLDER} -on=false -iso-datastore=${VSPHERE_IMAGE_DATASTORE} -iso=${VSPHERE_IMAGE_DATASTORE_PATH}/${OPENSHIFT_CLUSTERNAME}-${TYPE}-${COUNT}.iso ${OPENSHIFT_CLUSTERNAME}-${TYPE}-${COUNT}
   binaries/govc vm.change -e disk.enableUUID=1 -vm ${FOLDER}/${OPENSHIFT_CLUSTERNAME}-${TYPE}-${COUNT}
   binaries/govc vm.power -on=true ${FOLDER}/${OPENSHIFT_CLUSTERNAME}-${TYPE}-${COUNT}
 }
 
 function create_all_vms() {
+  echo "creating bootstrap vm  ${BOOTSTRAP_CPU} ${BOOTSTRAP_MEM} ${BOOTSTRAP_DISK} bootstrap"
   create_vm ${BOOTSTRAP_CPU} ${BOOTSTRAP_MEM} ${BOOTSTRAP_DISK} bootstrap
   for i in $(eval echo {1..${MASTER_COUNT}}); do
+     echo "creating master vm  ${MASTER_CPU} ${MASTER_MEM} ${MASTER_DISK} master $i"	  
     create_vm ${MASTER_CPU} ${MASTER_MEM} ${MASTER_DISK} master $i
   done
   for i in $(eval echo {1..${WORKER_COUNT}}); do
+     echo "creating bootstrap vm ${WORKER_CPU} ${WORKER_MEM} ${WORKER_DISK} workder $i"
     create_vm ${WORKER_CPU} ${WORKER_MEM} ${WORKER_DISK} worker $i
   done
   if [[ "${STORAGE_COUNT}" -gt "0" ]]; then
@@ -274,24 +278,6 @@ EOF
   fi
 }
 
-function cleanup_cluster() {
-  FOLDER="/${VSPHERE_DATACENTER}/vm/${VSPHERE_FOLDER}"
-  echo "cleaning up bootstrap vm"
-  binaries/govc vm.destroy /${FOLDER}/${OPENSHIFT_CLUSTERNAME}-bootstrap-1
-  echo "cleaning up master vms"
-  for i in $(eval echo {1..${MASTER_COUNT}}); do
-    binaries/govc vm.destroy /${FOLDER}/${OPENSHIFT_CLUSTERNAME}-master-$i
-  done
-  echo "cleaning up worker vms"
-  for i in $(eval echo {1..${WORKER_COUNT}}); do
-    binaries/govc vm.destroy /${FOLDER}/${OPENSHIFT_CLUSTERNAME}-worker-$i
-  done
-  echo "cleaning install files/folders"
-  rm -rf binaries iso ${OPENSHIFT_CLUSTERNAME} /tmp/tmpocpiso /tmp/temp_isolinux.cfg
-  sudo rm -rf /var/www/html/tramali/
-  rm ~/.ssh/id_ssh*
-}
-
 source ./environment.properties
 
 export GOVC_URL=${VSPHERE_HOSTNAME}
@@ -308,4 +294,4 @@ create_ignition_configs
 copy_files_to_webroot
 create_all_vms
 wait_for_cluster
-configure_storage
+# configure_storage
